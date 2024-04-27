@@ -35,6 +35,7 @@ replace year_period = period if month(date) == 6
 * Format date_variable
 gen date_variable = mofd(date)
 format date_variable %tm
+rename date_veriable date
 ```
 >[!Note]
 > If you want to create various of variables to controll for ex financial stocks, value , date i.e you an do this before saving the dataset
@@ -98,9 +99,9 @@ sort id date
 gen momentum = (last_month_price - last_year_price) / last_year_price if period != .
 
 * calculate benchmarks for momentum
-sort period size
-by period size : egen p_10th = pctile(momentum), p(10)
-by period size : egen p_90th = pctile(momentum), p(90)
+sort period
+by period: egen p_10th = pctile(momentum), p(10)
+by period: egen p_90th = pctile(momentum), p(90)
 
 * Assign grouping
 gen momentum_group = .
@@ -157,7 +158,7 @@ gen SBEME_weighted_return = SBEME_weight * SBEME_returns
 
 
 * calculate monthly portfolio return 
-egen SBEME_tot_Mreturn = total(SBEME_weighted_return), by(date_variable SBEME_portfolios)
+egen SBEME_tot_Mreturn = total(SBEME_weighted_return), by(date SBEME_portfolios)
 label variable SBEME_tot_Mreturn "Total monthly return for SBEME portfolios"
 replace SBEME_tot_Mreturn = . if SBEME_weighted_return == .
 
@@ -180,7 +181,7 @@ bysort id: replace SMOM_weight = SMOM_weight[_n-1] if SMOM_weight == . & !missin
 gen SMOM_weighted_return = SMOM_weight * SMOM_returns
 
 * calculate monthly portfolio return 
-egen SMOM_tot_Mreturn = total(SMOM_weighted_return), by(date_variable SMOM_portfolios)
+egen SMOM_tot_Mreturn = total(SMOM_weighted_return), by(date SMOM_portfolios)
 label variable SMOM_tot_Mreturn "Total monthly return for SMOM portfolios"
 replace SMOM_tot_Mreturn = . if SMOM_weighted_return == .
 ```
@@ -196,28 +197,27 @@ save "Data.dta", replace
 ## Collapse data
 ### For Fama-French
 ```
-collapse  SBEME_tot_Mreturn, by(SBEME_portfolios date_variable)
-sort date_variable
+use "data.dta"
+collapse  SBEME_tot_Mreturn, by(SBEME_portfolios date)
+sort date
 
 * to reshape the data had to add a placeholder for missing values
-replace SBEME_portfolios = "Placeholder" if missing(SBEME_portfolios)
-reshape wide SBEME_tot_Mreturn, i(date_variable) j(SBEME_portfolios) string
-drop SBEME_tot_MreturnPlaceholder
+drop if SBEME_portfolios == "."
+reshape wide SBEME_tot_Mreturn, i(date) j(SBEME_portfolios) string
 
 save "collapsed_SBEME.dta", replace
 
 ```
 ### For carhart
 ```
-use "Data.dta"
-
-collapse  SMOM_tot_Mreturn, by(SMOM_portfolios date_variable)
-sort date_variable
+use "data.dta"
+rename mom_portfolios SMOM_portfolios
+collapse  SMOM_tot_Mreturn, by(SMOM_portfolios date)
+sort date
 
 * to reshape the data had to add a placeholder for missing values
-replace SMOM_portfolios = "Placeholder" if missing(SMOM_portfolios)
-reshape wide SMOM_tot_Mreturn, i(date_variable) j(SMOM_portfolios) string
-drop SMOM_tot_MreturnPlaceholder
+drop if SMOM_portfolios == "."
+reshape wide SMOM_tot_Mreturn, i(date) j(SMOM_portfolios) string
 
 save "collapsed_SMOM.dta", replace
 ```
@@ -225,17 +225,19 @@ save "collapsed_SMOM.dta", replace
 ## Import factor dataset and merge
 > [!Note]
 > Here you import your dataset with the factors for Fama-French and/or Carhart
-> Make sure to have a veriable for your timestamp date_variable to be able to match with the dta files you created
+> Make sure to have a veriable for your timestamp date to be able to match with the dta files you created
 > You might need to format this on your own
 
-When you have a common verible for time you can merge your factor dataset with the 2 dta files
+When you have a common veriable for time you can merge your factor dataset with the 2 dta files
 - "collapsed_SBEME.dta"
 - "collapsed_SMOM.dta"
 
 Remove all data that didnt match up by running:
 ```
-sort date_variable
+sort date
 drop if _merge == 1 | _merge == 2
+
+save "combined_data.dta"
 ```
 
 ## Generate Left-hand side of regressions (Return - Rf)
@@ -257,6 +259,44 @@ forvalues i = 1/3 {
         gen S`i'MOM`j' = SMOM_tot_MreturnS`i'MOM`j' - rf
     }
 }
+```
+
+
+### Some cleaning and tidy up
+```
+drop SBEME_tot_MreturnS1BEME1 SBEME_tot_MreturnS1BEME2 SBEME_tot_MreturnS1BEME3 SBEME_tot_MreturnS2BEME1 SBEME_tot_MreturnS2BEME2 SBEME_tot_MreturnS2BEME3 SBEME_tot_MreturnS3BEME1 SBEME_tot_MreturnS3BEME2 SBEME_tot_MreturnS3BEME3 _merge
+
+
+order S1BEME1 S1BEME2 S1BEME3 S2BEME1 S2BEME2 S2BEME3 S3BEME1 S3BEME2 S3BEME3, after(date)
+
+drop SMOM_tot_MreturnS1MOM1 SMOM_tot_MreturnS1MOM2 SMOM_tot_MreturnS2MOM1 SMOM_tot_MreturnS2MOM2 SMOM_tot_MreturnS3MOM1 SMOM_tot_MreturnS3MOM2 _merge
+
+order S1MOM1 S1MOM2 S2MOM1 S2MOM2 S3MOM1 S3MOM2, after(date)
+```
+## Regressions
+### CAPM
+```
+local portfolios S1BEME1 S1BEME2 S1BEME3 S2BEME1 S2BEME2 S2BEME3 S3BEME1 S3BEME2 S3BEME3 S1MOM1 S1MOM2 S2MOM1 S2MOM2 S3MOM1 S3MOM2
+foreach port of local portfolios {
+    regress `port' rm_rf
+}
+```
+
+### Fama-French
+```
+local portfolios S1BEME1 S1BEME2 S1BEME3 S2BEME1 S2BEME2 S2BEME3 S3BEME1 S3BEME2 S3BEME3 S1MOM1 S1MOM2 S2MOM1 S2MOM2 S3MOM1 S3MOM2
+foreach port of local portfolios {
+    regress `port' rm_rf smb_ew hml_ew
+}
+```
+
+### Carhart
+```
+local portfolios S1BEME1 S1BEME2 S1BEME3 S2BEME1 S2BEME2 S2BEME3 S3BEME1 S3BEME2 S3BEME3 S1MOM1 S1MOM2 S2MOM1 S2MOM2 S3MOM1 S3MOM2
+foreach port of local portfolios {
+    regress `port' rm_rf smb_ew hml_ew mom_ew
+}
+
 ```
 
 
